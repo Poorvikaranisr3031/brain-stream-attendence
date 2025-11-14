@@ -1,88 +1,543 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
 <head>
-<meta charset="UTF-8">
-<title>Brain Stream Attendance – Face Count</title>
-<style>
-body { font-family: Arial; background: #0e1726; color: white; padding: 20px; }
-.card { background:#1c2536; padding:15px; border-radius:10px; margin-bottom:20px; }
-button { padding:10px 20px; border:0; border-radius:6px; cursor:pointer; }
-#preview { max-width:100%; margin-top:10px; border-radius:10px; }
-canvas { position:absolute; top:0; left:0; }
-</style>
-</head>
-<body>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Brain Stream — Robust Attendance (FaceDetector + MediaPipe fallback)</title>
 
-<h2>Brain Stream Attendance – Face Counting + PDF</h2>
-
-<div class="card">
-  <h3>Upload Class Photo</h3>
-  <input type="file" id="fileInput" accept="image/*">
-  <button onclick="detectFaces()">Detect Faces</button>
-</div>
-
-<div class="card">
-  <h3>Result</h3>
-  Total Faces: <span id="count">0</span>
-  <div id="previewContainer" style="position:relative;">
-    <img id="preview">
-    <canvas id="overlay"></canvas>
-  </div>
-</div>
-
-<div class="card">
-  <h3>Attendance PDF</h3>
-  <button onclick="downloadPDF()">Download PDF</button>
-</div>
-
+<!-- jsPDF for PDF export -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
+<style>
+  :root{--bg:#071022;--card:#0f1624;--muted:#9fb0c8;--accent:#2b6ef6;--ok:#10b981}
+  body{margin:0;font-family:Arial,Inter,sans-serif;background:var(--bg);color:#e6eef8;padding:18px;}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{margin:0 0 6px}
+  .muted{color:var(--muted);font-size:13px}
+  .box{background:var(--card);padding:14px;border-radius:10px;border:1px solid rgba(255,255,255,0.03);margin-top:14px}
+  input[type=text],input[type=password]{width:100%;padding:10px;border-radius:8px;border:1px solid #223;background:transparent;color:inherit}
+  button{background:var(--accent);color:white;padding:8px 12px;border-radius:8px;border:0;cursor:pointer}
+  .ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);color:inherit;padding:8px 10px;border-radius:8px}
+  table{width:100%;border-collapse:collapse;margin-top:10px}
+  th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,0.03);text-align:left}
+  #preview{max-width:100%;border-radius:10px;border:2px solid rgba(255,255,255,0.05)}
+  canvas{position:absolute;top:0;left:0}
+  video{border-radius:10px;width:100%;max-width:420px}
+  #status { font-size:13px; margin-top:6px; color:var(--muted); }
+  #log { font-family:monospace; font-size:12px; color:#cdd; margin-top:8px; max-height:140px; overflow:auto; background:#08121a; padding:8px; border-radius:6px; border:1px solid rgba(255,255,255,0.03); }
+</style>
+</head>
+
+<body>
+  <div class="wrap">
+    <h1>Brain Stream — Robust Attendance</h1>
+    <div class="muted">This version will try native FaceDetector first, then MediaPipe full (multiple CDN attempts). See status & logs below.</div>
+
+    <!-- LOGIN AREA -->
+    <div id="loginArea">
+      <div id="loginBox" class="box" style="max-width:360px;margin-top:18px">
+        <h3>Login</h3>
+        <input id="loginUser" placeholder="Username"><br><br>
+        <input id="loginPass" type="password" placeholder="Password"><br><br>
+        <label><input type="checkbox" id="rememberMe"> Remember me</label><br><br>
+        <button onclick="login()">Login</button>
+        <button class="ghost" onclick="openSignup()">Create Account</button>
+      </div>
+
+      <div id="signupBox" class="box" style="max-width:360px;margin-top:18px;display:none">
+        <h3>Create Account</h3>
+        <input id="signupUser" placeholder="Choose username"><br><br>
+        <input id="signupPass" type="password" placeholder="Choose password"><br><br>
+        <input id="signupConfirm" type="password" placeholder="Confirm password"><br><br>
+        <button onclick="signup()">Create</button>
+        <button class="ghost" onclick="backToLogin()">Back</button>
+      </div>
+    </div>
+
+    <!-- APP AREA -->
+    <div id="app" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div><strong>Logged in as:</strong> <span id="usernameDisplay" style="color:#7ef3b2"></span></div>
+        <button class="ghost" onclick="logout()">Logout</button>
+      </div>
+
+      <div class="box">
+        <h3>Image / Webcam</h3>
+        <div class="small">Choose an image or use webcam. Detection will use native FaceDetector if available, otherwise MediaPipe (full model).</div>
+        <div id="status">Initializing detectors...</div>
+
+        <div style="margin-top:8px;">
+          <label class="ghost" style="cursor:pointer">
+            <input type="file" id="filePicker" accept="image/*" style="display:none" onchange="onFilePicked(event)">Choose Image
+          </label>
+          <button onclick="detectCurrent()" id="detectBtn">Detect & Count</button>
+          <button class="ghost" id="saveBtn" onclick="saveCurrentAttendance()">Save Attendance</button>
+          <button onclick="exportAllPDF()">Export All PDF</button>
+        </div>
+
+        <div style="margin-top:16px;padding:12px;border:1px dashed #334;border-radius:10px">
+          <strong>Webcam</strong>
+          <div class="small">Start webcam, capture snapshot, then Detect & Count.</div>
+          <br>
+          <button onclick="startWebcam()">Start Webcam</button>
+          <button class="ghost" onclick="stopWebcam()">Stop Webcam</button>
+          <div style="margin-top:8px;">
+            <video id="webcam" autoplay playsinline style="display:none;"></video>
+          </div>
+          <div style="margin-top:8px;">
+            <button onclick="captureSnapshot()">Capture Snapshot</button>
+          </div>
+        </div>
+
+        <div id="previewArea" style="margin-top:18px">
+          <div style="position:relative;display:inline-block;">
+            <img id="preview" />
+            <canvas id="overlay"></canvas>
+          </div>
+        </div>
+
+        <div id="resultBox" style="margin-top:12px; display:none">
+          <h3>Result</h3>
+          <div class="small">Detected faces: <strong id="countText">0</strong></div>
+          <div class="small">Time: <span id="timeText"></span></div>
+          <br>
+          <button onclick="downloadPDF()">PDF This</button>
+          <button class="ghost" onclick="clearPreview()">Clear</button>
+        </div>
+
+        <div id="log" aria-live="polite"></div>
+      </div>
+
+      <div class="box">
+        <h3>Saved Attendance</h3>
+        <button class="ghost" onclick="clearAllRecords()">Clear All</button>
+        <table id="recordsTable">
+          <thead><tr><th>Time</th><th>User</th><th>Count</th><th>Actions</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
 <script>
-let faces = [];
+/* ------------------ utilities & storage ------------------ */
+const logEl = document.getElementById('log');
+function log(msg){ console.log(msg); if(logEl){ logEl.innerText = String(new Date().toLocaleTimeString()) + " — " + msg + "\n" + logEl.innerText; } }
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
-async function detectFaces() {
-    const file = document.getElementById("fileInput").files[0];
-    if (!file) { alert("Upload a photo."); return; }
+const USERS_KEY = "bs_users_robust_v1";
+const ACTIVE_KEY = "bs_active_robust_v1";
+const ATT_KEY = "bs_att_records_robust_v1";
+function loadUsers(){ return JSON.parse(localStorage.getItem(USERS_KEY) || "{}"); }
+function saveUsers(u){ localStorage.setItem(USERS_KEY, JSON.stringify(u)); }
+function setActive(u){ localStorage.setItem(ACTIVE_KEY, u); }
+function getActive(){ return localStorage.getItem(ACTIVE_KEY); }
+function clearActive(){ localStorage.removeItem(ACTIVE_KEY); }
+function loadRecords(){ return JSON.parse(localStorage.getItem(ATT_KEY) || "[]"); }
+function saveRecords(r){ localStorage.setItem(ATT_KEY, JSON.stringify(r)); }
 
-    const img = document.getElementById("preview");
-    img.src = URL.createObjectURL(file);
+/* ------------------ login/signup ------------------ */
+function openSignup(){ loginBox.style.display="none"; signupBox.style.display="block"; }
+function backToLogin(){ signupBox.style.display="none"; loginBox.style.display="block"; }
 
-    await new Promise(r => img.onload = r);
+function signup(){
+  const u = signupUser.value.trim();
+  const p = signupPass.value;
+  const c = signupConfirm.value;
+  if(!u||!p){ alert("Fill username & password"); return; }
+  if(p !== c){ alert("Passwords do not match"); return; }
+  const users = loadUsers();
+  if(users[u]){ alert("User exists"); return; }
+  users[u] = { password: p };
+  saveUsers(users);
+  alert("Account created. Login now.");
+  backToLogin();
+}
 
-    const canvas = document.getElementById("overlay");
-    canvas.width = img.width;
-    canvas.height = img.height;
-    const ctx = canvas.getContext("2d");
+function login(){
+  const u = loginUser.value.trim();
+  const p = loginPass.value;
+  const users = loadUsers();
+  if(!users[u]){ alert("User not found"); return; }
+  if(users[u].password !== p){ alert("Incorrect password"); return; }
+  if(rememberMe.checked) setActive(u); else clearActive();
+  showAppForUser(u);
+}
 
-    if (!("FaceDetector" in window)) {
-        alert("Your browser does not support FaceDetector API.");
-        return;
+function logout(){ clearActive(); app.style.display="none"; loginArea.style.display="block"; }
+function showAppForUser(u){ loginArea.style.display="none"; app.style.display="block"; usernameDisplay.textContent = u; renderRecordsTable(); }
+
+/* quick auto-login if remembered */
+window.addEventListener('load', ()=>{
+  const a = getActive();
+  if(a) showAppForUser(a);
+  startInitialization(); // start trying to initialize detectors
+});
+
+/* ------------------ Dynamic script loader (tries multiple CDNs) ------------------ */
+async function loadScriptFromUrls(urls){
+  for(const url of urls){
+    try{
+      log(`Attempting to load script: ${url}`);
+      await new Promise((resolve, reject)=>{
+        const s = document.createElement('script');
+        s.src = url;
+        s.async = true;
+        s.onload = ()=> { log(`Loaded ${url}`); resolve(); };
+        s.onerror = (e)=> { log(`Failed to load ${url}`); reject(new Error('load failed')); };
+        document.head.appendChild(s);
+      });
+      return true;
+    }catch(e){
+      log(`Load failed for ${url}: ${e.message || e}`);
+      // try next
     }
+  }
+  return false;
+}
 
-    const detector = new FaceDetector({ fastMode: true });
+/* ------------------ Detector initialization: FaceDetector API or MediaPipe ------------------ */
+let useNative = false;
+let mpAvailable = false;
+let faceDetection = null;
+let modelReady = false;
 
-    faces = await detector.detect(img);
+async function startInitialization(){
+  document.getElementById('status').innerText = 'Initializing detectors...';
+  log('Init: checking native FaceDetector support');
+  if('FaceDetector' in window){
+    try {
+      // quick test - instantiate
+      const test = new FaceDetector();
+      useNative = true;
+      modelReady = true;
+      document.getElementById('status').innerText = 'Using native FaceDetector API (fast).';
+      log('Native FaceDetector available and will be used.');
+      return;
+    } catch(err){
+      log('Native FaceDetector exists but instantiation failed: ' + err);
+    }
+  } else {
+    log('Native FaceDetector not present.');
+  }
 
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.strokeStyle = "lime";
-    ctx.lineWidth = 3;
+  // Attempt to load MediaPipe Face Detection library from multiple CDNs
+  document.getElementById('status').innerText = 'Native not available — loading MediaPipe (trying multiple CDNs)...';
+  const cdnCandidates = [
+    'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.5/face_detection.js',
+    'https://unpkg.com/@mediapipe/face_detection@0.5/face_detection.js'
+  ];
+  const loaded = await loadScriptFromUrls(cdnCandidates);
+  if(!loaded){
+    document.getElementById('status').innerText = 'Failed to load MediaPipe from CDN(s). Check network or try a different network.';
+    log('All CDN attempts failed. MediaPipe unavailable.');
+    return;
+  }
 
-    faces.forEach(face => {
-        let { x,y,width,height } = face.boundingBox;
-        ctx.strokeRect(x,y,width,height);
+  // Also load drawing_utils (some builds need it). Try both CDNs
+  await loadScriptFromUrls([
+    'https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.5/drawing_utils.js',
+    'https://unpkg.com/@mediapipe/drawing_utils@0.5/drawing_utils.js'
+  ]);
+
+  // now initialize MediaPipe FaceDetection
+  try {
+    log('Initializing MediaPipe FaceDetection object...');
+    faceDetection = new FaceDetection({
+      locateFile: (file) => {
+        // prefer jsdelivr, fallback will be handled by loader above
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.5/${file}`;
+      }
+    });
+    // full model for accuracy
+    faceDetection.setOptions({ model: 'full', minDetectionConfidence: 0.5 });
+    faceDetection.onResults((res)=> {
+      // results handling delegated to onMPResults defined later
+      onMPResults(res);
     });
 
-    document.getElementById("count").textContent = faces.length;
+    mpAvailable = true;
+    modelReady = true;
+    document.getElementById('status').innerText = 'MediaPipe loaded and ready (full model).';
+    log('MediaPipe FaceDetection initialized.');
+  } catch(e){
+    log('MediaPipe initialization error: ' + (e.message || e));
+    document.getElementById('status').innerText = 'MediaPipe init failed: ' + (e.message || e);
+  }
 }
 
-function downloadPDF() {
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF();
-    doc.text("Brain Stream Attendance Report", 20, 20);
-    doc.text("Total Faces Detected: " + faces.length, 20, 40);
-    doc.save("attendance.pdf");
+/* ------------------ detection pipeline (unified) ------------------ */
+let lastDetection = { count:0, time:null, image:null, boxes:[] };
+
+function drawBoxes(boxes){
+  const img = document.getElementById('preview');
+  const overlay = document.getElementById('overlay');
+  overlay.width = img.width; overlay.height = img.height;
+  const ctx = overlay.getContext('2d');
+  ctx.clearRect(0,0,overlay.width,overlay.height);
+  ctx.strokeStyle = "#7ef3b2"; ctx.lineWidth = Math.max(2, Math.round(img.width/200));
+  boxes.forEach(b=> ctx.strokeRect(b.x,b.y,b.width,b.height));
 }
+
+async function detectCurrent(){
+  // ensure there's an image
+  const imgEl = document.getElementById('preview');
+  if(!imgEl || !imgEl.src){ alert('Please upload an image or capture a snapshot first.'); return; }
+
+  // prefer native FaceDetector if present
+  if(useNative){
+    try {
+      const fd = new FaceDetector();
+      document.getElementById('status').innerText = 'Running native FaceDetector...';
+      const faces = await fd.detect(imgEl);
+      const boxes = faces.map(f => {
+        const b = f.boundingBox;
+        return { x: b.x, y: b.y, width: b.width, height: b.height };
+      });
+      lastDetection.count = boxes.length;
+      lastDetection.time = new Date().toLocaleString();
+      lastDetection.boxes = boxes;
+      lastDetection.image = imgEl.src;
+      drawBoxes(boxes);
+      document.getElementById('countText').innerText = boxes.length;
+      document.getElementById('timeText').innerText = lastDetection.time;
+      document.getElementById('resultBox').style.display = 'block';
+      document.getElementById('status').innerText = 'Native detection complete.';
+      log('Native detection success: ' + boxes.length + ' faces.');
+      return;
+    } catch(err){
+      log('Native detector error: ' + (err.message || err));
+      // fall through to MediaPipe if available
+    }
+  }
+
+  // MediaPipe path
+  if(!mpAvailable || !faceDetection){
+    alert('No available detector. Check status messages and console. If CDN blocked, switch network or tell me.');
+    return;
+  }
+
+  try {
+    document.getElementById('status').innerText = 'Running MediaPipe detection...';
+    // MediaPipe faceDetection expects image/video/canvas. Using the image element is fine.
+    await faceDetection.send({ image: imgEl });
+    // onMPResults will handle results and UI
+    log('MediaPipe detection sent');
+  } catch(err){
+    // AbortError or other possible errors can occur — capture and explain
+    log('MediaPipe detection failed: ' + (err && err.message ? err.message : String(err)));
+    alert('Detection failed: ' + (err && err.message ? err.message : String(err)));
+    document.getElementById('status').innerText = 'Detection failed: ' + (err && err.message ? err.message : String(err));
+  }
+}
+
+/* MediaPipe results handler */
+function onMPResults(results){
+  try{
+    const detections = results.detections || [];
+    log('MediaPipe returned ' + detections.length + ' detections');
+    const imgEl = document.getElementById('preview');
+    const overlay = document.getElementById('overlay');
+    overlay.width = imgEl.width; overlay.height = imgEl.height;
+    const ctx = overlay.getContext('2d');
+    ctx.clearRect(0,0,overlay.width,overlay.height);
+    ctx.strokeStyle = "#7ef3b2";
+    ctx.lineWidth = Math.max(2, Math.round(imgEl.width/200));
+
+    const boxes = [];
+    detections.forEach(d => {
+      // many builds of MediaPipe put boundingBox in different shapes; handle common cases
+      let bb = null;
+      if(d.boundingBox) bb = d.boundingBox;
+      else if(d.locationData && d.locationData.relativeBoundingBox) bb = d.locationData.relativeBoundingBox;
+      else if(d.locationData && d.locationData.relative_bounding_box) bb = d.locationData.relative_bounding_box;
+      if(!bb) return;
+
+      // bb possibly relative (0..1) -> convert to pixels
+      let x = (bb.xMin !== undefined ? bb.xMin : (bb.xCenter ? bb.xCenter - (bb.width/2) : 0));
+      let y = (bb.yMin !== undefined ? bb.yMin : (bb.yCenter ? bb.yCenter - (bb.height/2) : 0));
+      let w = (bb.width !== undefined ? bb.width : (bb.w || 0));
+      let h = (bb.height !== undefined ? bb.height : (bb.h || 0));
+
+      // if relative (<=1), scale
+      if(w <= 1.01){
+        x = x * imgEl.width;
+        y = y * imgEl.height;
+        w = w * imgEl.width;
+        h = h * imgEl.height;
+      }
+
+      // if x/y appear as centers, ensure inside bounds
+      if(w <= 0 || h <= 0) return;
+      x = Math.max(0, x); y = Math.max(0, y);
+      w = Math.min(w, imgEl.width - x); h = Math.min(h, imgEl.height - y);
+
+      ctx.strokeRect(x,y,w,h);
+      boxes.push({ x, y, width: w, height: h });
+    });
+
+    lastDetection.boxes = boxes;
+    lastDetection.count = boxes.length;
+    lastDetection.time = new Date().toLocaleString();
+    // image remains same
+    document.getElementById('countText').innerText = boxes.length;
+    document.getElementById('timeText').innerText = lastDetection.time;
+    document.getElementById('resultBox').style.display = 'block';
+    document.getElementById('status').innerText = 'MediaPipe detection complete.';
+  }catch(e){
+    log('Error processing MediaPipe results: ' + (e && e.message ? e.message : e));
+    alert('Processing detection results failed: ' + (e && e.message ? e.message : e));
+  }
+}
+
+/* ------------------ image & webcam helpers ------------------ */
+function onFilePicked(e){
+  const f = e.target.files[0];
+  if(!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = document.getElementById('preview');
+    img.src = reader.result;
+    lastDetection.image = reader.result;
+    img.onload = () => {
+      document.getElementById('resultBox').style.display = 'none';
+      const overlay = document.getElementById('overlay');
+      overlay.width = img.width; overlay.height = img.height;
+    };
+  };
+  reader.readAsDataURL(f);
+}
+
+let webcamStream=null;
+const webcamEl = document.getElementById('webcam');
+
+function startWebcam(){
+  navigator.mediaDevices.getUserMedia({ video: true })
+    .then(s => {
+      webcamStream = s;
+      webcamEl.srcObject = s;
+      webcamEl.style.display = 'block';
+      log('Webcam started');
+    })
+    .catch(err => {
+      log('Webcam error: ' + err);
+      alert('Could not access webcam: ' + (err && err.message ? err.message : err));
+    });
+}
+
+function stopWebcam(){
+  if(webcamStream){
+    webcamStream.getTracks().forEach(t=>t.stop());
+    webcamStream = null;
+  }
+  webcamEl.style.display = 'none';
+  log('Webcam stopped');
+}
+
+function captureSnapshot(){
+  if(!webcamStream){ alert('Start webcam first'); return; }
+  const v = webcamEl;
+  const c = document.createElement('canvas');
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext('2d').drawImage(v,0,0);
+  const data = c.toDataURL('image/jpeg', 0.92);
+  const img = document.getElementById('preview');
+  img.src = data;
+  lastDetection.image = data;
+  img.onload = ()=> {
+    document.getElementById('resultBox').style.display = 'none';
+    const overlay = document.getElementById('overlay');
+    overlay.width = img.width; overlay.height = img.height;
+  };
+  alert('Snapshot captured. Click Detect & Count.');
+}
+
+/* ------------------ save records & PDF ------------------ */
+function saveCurrentAttendance(){
+  if(!lastDetection.time){ alert('No detection run yet.'); return; }
+  const recs = loadRecords();
+  recs.unshift({
+    id: Date.now().toString(),
+    user: getActive() || (loginUser.value.trim() || 'unknown'),
+    time: lastDetection.time,
+    count: lastDetection.count,
+    image: lastDetection.image
+  });
+  saveRecords(recs);
+  renderRecordsTable();
+  alert('Saved');
+}
+
+function renderRecordsTable(){
+  const tbody = document.querySelector('#recordsTable tbody'); tbody.innerHTML = '';
+  loadRecords().forEach(r=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.time}</td><td>${r.user}</td><td>${r.count}</td>
+      <td>
+        <button class="ghost" onclick="previewRecord('${r.id}')">View</button>
+        <button onclick="exportSingle('${r.id}')">PDF</button>
+        <button class="ghost" onclick="deleteRecord('${r.id}')">Del</button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function previewRecord(id){
+  const r = loadRecords().find(x=>x.id===id);
+  if(!r) return;
+  const img = document.getElementById('preview');
+  img.src = r.image;
+  lastDetection.image = r.image;
+  lastDetection.count = r.count;
+  lastDetection.time = r.time;
+  document.getElementById('countText').innerText = r.count;
+  document.getElementById('timeText').innerText = r.time;
+  document.getElementById('resultBox').style.display = 'block';
+}
+
+function deleteRecord(id){ if(!confirm('Delete?')) return; saveRecords(loadRecords().filter(x=>x.id!==id)); renderRecordsTable(); }
+function clearAllRecords(){ if(!confirm('Clear all?')) return; saveRecords([]); renderRecordsTable(); }
+
+/* PDF exports */
+async function downloadPDF(){
+  if(!lastDetection.time){ alert('No detection to export'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'a4' });
+  doc.setFontSize(16); doc.text('Brain Stream — Attendance Report', 40, 40);
+  doc.setFontSize(12); doc.text('User: ' + (getActive() || 'unknown'), 40, 64);
+  doc.text('Time: ' + lastDetection.time, 40, 82);
+  doc.text('Count: ' + lastDetection.count, 40, 100);
+  const img = new Image(); img.src = lastDetection.image; await img.decode();
+  const maxW = 520; const ratio = img.width / img.height; const w = Math.min(maxW, img.width); const h = w/ratio;
+  doc.addImage(lastDetection.image, 'JPEG', 40, 120, w, h);
+  doc.save('attendance_single.pdf');
+}
+async function exportSingle(id){
+  const r = loadRecords().find(x=>x.id===id); if(!r) return alert('Not found');
+  const { jsPDF } = window.jspdf; const doc = new jsPDF({ unit:'pt', format:'a4' });
+  doc.setFontSize(16); doc.text('Brain Stream — Attendance Record', 40, 40);
+  doc.setFontSize(12); doc.text('User: '+r.user, 40, 64); doc.text('Time: '+r.time, 40, 82); doc.text('Count: '+r.count, 40, 100);
+  const img = new Image(); img.src = r.image; await img.decode(); const maxW = 520; const ratio = img.width / img.height; const w = Math.min(maxW, img.width); const h = w/ratio;
+  doc.addImage(r.image, 'JPEG', 40, 120, w, h); doc.save('attendance_record_'+r.id+'.pdf');
+}
+async function exportAllPDF(){
+  const recs = loadRecords(); if(!recs.length) return alert('No records');
+  const { jsPDF } = window.jspdf; const doc = new jsPDF({ unit:'pt', format:'a4' });
+  for(let i=0;i<recs.length;i++){
+    const r = recs[i]; if(i>0) doc.addPage();
+    doc.setFontSize(16); doc.text('Brain Stream — Attendance Record', 40, 40);
+    doc.setFontSize(12); doc.text('User: '+r.user, 40, 64); doc.text('Time: '+r.time, 40, 82); doc.text('Count: '+r.count, 40, 100);
+    const img = new Image(); img.src = r.image; await img.decode();
+    const maxW = 520; const ratio = img.width / img.height; const w = Math.min(maxW, img.width); const h = w/ratio;
+    doc.addImage(r.image, 'JPEG', 40, 120, w, h);
+  }
+  doc.save('all_attendance.pdf');
+}
+
+/* final helpers */
+function clearPreview(){ document.getElementById('preview').src=''; const ov = document.getElementById('overlay'); ov.getContext('2d').clearRect(0,0,ov.width,ov.height); document.getElementById('resultBox').style.display='none'; lastDetection = {count:0,time:null,image:null,boxes:[]}; }
+renderRecordsTable();
+
 </script>
-
 </body>
 </html>
