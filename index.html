@@ -1,75 +1,88 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Attendance — Recognition + PDF Export</title>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Brain Stream Attendance (Online, resilient)</title>
 
-  <!-- TensorFlow.js -->
+  <!-- PRIMARY TFJS (Cloudflare) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow/3.20.0/tf.min.js"></script>
+
+  <!-- Fallback TFJSs (unpkg and jsdelivr) - browsers will ignore duplicates if already loaded -->
+  <script src="https://unpkg.com/@tensorflow/tfjs@3.20.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.20.0/dist/tf.min.js"></script>
-  <!-- BlazeFace (face detection) -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface"></script>
-  <!-- MobileNet (for embeddings) -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet"></script>
+
+  <!-- BlazeFace & MobileNet libraries (multiple CDNs for resilience) -->
+  <script src="https://unpkg.com/@tensorflow-models/blazeface@0.0.7/dist/blazeface.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.0.7/dist/blazeface.min.js"></script>
+
+  <script src="https://unpkg.com/@tensorflow-models/mobilenet@2.1.0/dist/mobilenet.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.0/dist/mobilenet.min.js"></script>
+
   <!-- jsPDF for PDF export -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
   <style>
-    :root{--bg:#0b1220;--card:#0f1724;--muted:#98a8c0;--accent:#2563eb}
-    body{background:var(--bg);color:#e6eef8;font-family:Arial,Helvetica,sans-serif;padding:18px}
-    h1{margin:0 0 6px 0}
+    :root { --bg:#071020; --card:#0f1724; --muted:#98a8c0; --accent:#2563eb; --ok:#10b981; }
+    body{background:var(--bg);color:#e6eef8;font-family:Inter,Arial,sans-serif;margin:0;padding:20px}
     .wrap{max-width:1100px;margin:0 auto}
-    .grid{display:grid;grid-template-columns:360px 1fr;gap:14px;margin-top:14px}
-    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);padding:14px;border-radius:10px;border:1px solid rgba(255,255,255,0.03)}
+    h1{margin:0 0 6px 0}
     .muted{color:var(--muted);font-size:13px}
+    .grid{display:grid;grid-template-columns:360px 1fr;gap:14px;margin-top:14px}
+    .card{background:var(--card);padding:14px;border-radius:10px;border:1px solid rgba(255,255,255,0.03)}
     .btn{background:var(--accent);color:white;padding:8px 12px;border-radius:8px;border:0;cursor:pointer}
-    .btn-ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);color:#e6eef8;padding:8px 12px;border-radius:8px;cursor:pointer}
-    input[type="file"]{display:none}
+    .btn-ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:8px 12px;border-radius:8px;color:#e6eef8;cursor:pointer}
+    input[type=file]{display:none}
     .small{font-size:13px;color:var(--muted)}
-    .thumb{width:56px;height:56px;border-radius:6px;overflow:hidden;border:1px solid rgba(255,255,255,0.03);object-fit:cover}
+    .thumb{width:56px;height:56px;border-radius:6px;object-fit:cover;border:1px solid rgba(255,255,255,0.03)}
     table{width:100%;border-collapse:collapse;margin-top:10px}
-    th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,0.03);text-align:left;font-size:14px}
-    .record{padding:8px;border-radius:8px;background:#0e1a2a;margin-top:8px}
-    #previewBox{position:relative;display:inline-block}
+    th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,0.03);font-size:14px;text-align:left}
+    #previewImg{max-width:100%;border-radius:8px}
     canvas{position:absolute;left:0;top:0}
+    .status-ok{color:var(--ok);font-weight:600}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>📋 Attendance — Recognition + PDF Export</h1>
-    <div class="muted">Register students (upload 1–5 clear face photos each), then upload a classroom photo to mark attendance.</div>
+    <h1>Brain Stream Attendance</h1>
+    <div class="muted">Full face recognition + counting + attendance + PDF. If models do not appear immediately, wait 10-20s — the page will retry automatically.</div>
 
     <div class="grid">
-      <!-- LEFT: Student registration + controls -->
+      <!-- LEFT -->
       <div>
         <div class="card">
-          <div style="font-weight:600">Add / Register Student</div>
-          <div class="small muted" style="margin-top:6px">Name + 1–5 photos (front face preferred)</div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div style="font-weight:600">Register Student</div>
+            <div id="modelStatus" class="small">Models: <span id="ms-text">loading...</span></div>
+          </div>
+          <div class="small muted" style="margin-top:6px">Enter name, upload 1–5 clear face photos (frontal), then click Add.</div>
 
-          <input id="studentName" class="input" placeholder="Student name" style="width:100%;padding:8px;margin-top:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.03);background:transparent;color:inherit">
+          <input id="studentName" placeholder="Student name" style="width:100%;padding:8px;margin-top:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.03);background:transparent;color:inherit">
 
-          <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-            <label class="btn-ghost" for="studentFiles" style="cursor:pointer">Upload Photos</label>
+          <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+            <label for="studentFiles" class="btn-ghost" style="cursor:pointer">Upload Photos</label>
             <input id="studentFiles" type="file" accept="image/*" multiple>
             <button id="addStudentBtn" class="btn">Add Student</button>
           </div>
 
           <div id="studentPreview" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"></div>
+        </div>
 
-          <hr style="margin:12px 0;border:none;border-top:1px solid rgba(255,255,255,0.03)">
+        <div style="height:12px"></div>
 
+        <div class="card">
           <div style="font-weight:600">Attendance</div>
-          <div class="small muted" style="margin-top:6px">Upload classroom photo and click Detect.</div>
+          <div class="small muted" style="margin-top:6px">Upload classroom photo and click Detect & Mark</div>
 
-          <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-            <label class="btn-ghost" for="classFile" style="cursor:pointer">Upload Classroom Photo</label>
+          <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+            <label for="classFile" class="btn-ghost" style="cursor:pointer">Upload Photo</label>
             <input id="classFile" type="file" accept="image/*">
             <button id="detectBtn" class="btn">Detect & Mark</button>
           </div>
 
           <div style="margin-top:12px;display:flex;gap:8px;flex-direction:column">
             <button id="exportPdfBtn" class="btn">Export Attendance PDF</button>
-            <button id="clearAllBtn" class="btn-ghost">Clear students & attendance</button>
+            <button id="clearAllBtn" class="btn-ghost">Clear Students & Records</button>
           </div>
         </div>
 
@@ -77,28 +90,26 @@
 
         <div class="card">
           <div style="font-weight:600">Registered Students</div>
-          <div id="studentsList" style="margin-top:10px;max-height:320px;overflow:auto"></div>
+          <div id="studentsList" style="margin-top:10px;max-height:260px;overflow:auto"></div>
         </div>
       </div>
 
-      <!-- RIGHT: Preview + attendance table -->
+      <!-- RIGHT -->
       <div>
         <div class="card" style="min-height:420px">
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <div style="font-weight:600">Preview & Detections</div>
-            <div class="small muted" id="status">Models: loading...</div>
+            <div style="font-weight:600">Preview & Results</div>
+            <div id="infoRight" class="small muted">Detected: <span id="countFaces">0</span></div>
           </div>
 
           <div style="margin-top:12px">
-            <div id="previewBox">
-              <img id="preview" style="max-width:100%;border-radius:8px;border:1px solid rgba(255,255,255,0.03);" />
-              <canvas id="overlay"></canvas>
+            <div id="previewContainer" style="position:relative;display:inline-block">
+              <img id="previewImg"/>
+              <canvas id="previewOverlay"></canvas>
             </div>
 
             <div id="resultPanel" style="margin-top:12px;display:none">
               <div style="font-weight:600">Attendance Result</div>
-              <div class="small muted" style="margin-top:6px">Detected people and matched students</div>
-
               <table id="attTable">
                 <thead><tr><th>Time</th><th>Name</th><th>Confidence</th></tr></thead>
                 <tbody></tbody>
@@ -110,11 +121,11 @@
         <div style="height:12px"></div>
 
         <div class="card">
-          <div style="font-weight:600">Quick Help</div>
+          <div style="font-weight:600">Help</div>
           <div class="small muted" style="margin-top:6px">
-            • Register students first (2–4 clear photos each for best results).<br>
-            • Then upload a classroom photo and click Detect.<br>
-            • Use Export PDF to download attendance sheet.
+            • Upload 2–4 clear frontal photos per student for best results.<br>
+            • Classroom photo faces should be reasonably large and not heavily occluded.<br>
+            • If models fail to load, try another network (or tell me and I will provide a zip).
           </div>
         </div>
       </div>
@@ -122,342 +133,306 @@
   </div>
 
 <script>
-(async function(){
+/*
+  Resilient online version:
+  - tries to load models from CDN and retries up to RETRY_COUNT times
+  - full detection + recognition + count + PDF export
+*/
 
-  // ---------------------------
-  // Load models
-  // ---------------------------
-  const statusEl = document.getElementById('status');
-  let detector, mobilenetModel;
+const RETRY_COUNT = 3;
+const RETRY_DELAY_MS = 4000; // 4s between retries
+const MS_TEXT = document.getElementById('ms-text');
+
+let detector = null;
+let mobilenetModel = null;
+
+// utilities
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function logStatus(msg){ MS_TEXT.textContent = msg; if(msg.includes('✔')) MS_TEXT.className='status-ok'; }
+async function tryLoadModelsOnce(){
   try {
-    detector = await blazeface.load();
-    mobilenetModel = await mobilenet.load({version:2,alpha:1.0});
-    statusEl.textContent = "Models loaded ✔";
-  } catch (e) {
-    statusEl.textContent = "Model load failed";
-    alert("Model failed to load. Check internet or try a different browser.");
-    console.error(e);
-    return;
+    // ensure tf exists
+    if(!window.tf) throw new Error('tf not loaded');
+    // blazeface and mobilenet libraries are included via script tags; try to load
+    const det = await blazeface.load();
+    const mob = await mobilenet.load({version:2, alpha:1.0});
+    return {det,mob};
+  } catch(err){
+    console.warn('model load attempt failed', err);
+    throw err;
   }
+}
 
-  // ---------------------------
-  // Utility functions
-  // ---------------------------
-  function cosineSimilarity(a, b) {
-    let dot = 0, na = 0, nb = 0;
-    for (let i=0;i<a.length;i++){
-      dot += a[i]*b[i];
-      na += a[i]*a[i];
-      nb += b[i]*b[i];
-    }
-    return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-8);
-  }
-
-  function avgEmbeddings(listOfEmb) {
-    const n = listOfEmb.length;
-    if (n === 0) return null;
-    const L = listOfEmb[0].length;
-    const out = new Array(L).fill(0);
-    for (let i=0;i<n;i++){
-      for (let j=0;j<L;j++) out[j] += listOfEmb[i][j];
-    }
-    for (let j=0;j<L;j++) out[j] /= n;
-    return out;
-  }
-
-  // Convert an HTMLImageElement or canvas to a tensor suitable for mobilenet
-  function imageToTensorForMobileNet(imgEl) {
-    // mobilenet expects image tensor [H,W,3] in range [0,1]
-    const tfImg = tf.browser.fromPixels(imgEl).toFloat().div(tf.scalar(255));
-    // mobilenet.infer accepts image tensor and returns embeddings if second arg 'embedding' true
-    return tfImg;
-  }
-
-  // crop and get embedding from face bbox (x,y,w,h) on the original-sized preview image
-  async function getEmbeddingFromBox(imageEl, box) {
-    // create temporary canvas of box size then resize to 224x224
-    const [x, y, w, h] = box;
-    if (w < 20 || h < 20) return null; // too small
-    const tmp = document.createElement('canvas');
-    tmp.width = Math.max(64, Math.round(w));
-    tmp.height = Math.max(64, Math.round(h));
-    const ctx = tmp.getContext('2d');
-    ctx.drawImage(imageEl, x, y, w, h, 0, 0, tmp.width, tmp.height);
-    // resize canvas to 224 for mobilenet
-    const r = document.createElement('canvas');
-    r.width = 224; r.height = 224;
-    r.getContext('2d').drawImage(tmp, 0, 0, r.width, r.height);
-
-    // get tensor and run mobilenet.infer with embedding flag
-    const t = tf.browser.fromPixels(r).toFloat().div(tf.scalar(255));
-    // mobilenet's infer with 'embedding' returns a tensor we can arraySync
-    const embTensor = mobilenetModel.infer(t, true);
-    const emb = embTensor.arraySync(); // [1,embeddingSize] or [embeddingSize]
-    // cleanup tensors
-    embTensor.dispose(); t.dispose();
-    // normalize to 1D array
-    return Array.isArray(emb[0]) ? emb[0] : emb;
-  }
-
-  // ---------------------------
-  // Storage: students & attendance (localStorage)
-  // ---------------------------
-  const STUD_KEY = 'att_students_v1';
-  const ATT_KEY = 'att_history_v1';
-
-  function loadStudents() {
+async function loadModelsWithRetry(){
+  let attempt=0;
+  while(attempt < RETRY_COUNT){
+    attempt++;
     try {
-      const raw = localStorage.getItem(STUD_KEY);
-      return raw ? JSON.parse(raw) : {};
-    } catch(e) { return {}; }
+      logStatus(loading (attempt ${attempt}/${RETRY_COUNT})...);
+      const {det,mob} = await tryLoadModelsOnce();
+      detector = det;
+      mobilenetModel = mob;
+      logStatus('Models loaded ✔');
+      return true;
+    } catch(e){
+      logStatus(failed attempt ${attempt}. retrying...);
+      await sleep(RETRY_DELAY_MS);
+    }
   }
-  function saveStudents(obj) {
-    localStorage.setItem(STUD_KEY, JSON.stringify(obj));
-  }
-  function loadAttendance() {
-    try { const r = localStorage.getItem(ATT_KEY); return r ? JSON.parse(r) : []; } catch(e){return [];}
-  }
-  function saveAttendance(arr) { localStorage.setItem(ATT_KEY, JSON.stringify(arr)); }
+  logStatus('Model load failed. Check internet / try another network.');
+  return false;
+}
 
-  let students = loadStudents(); // { name: { photos: [dataUrl,...], embeddings: [[..],[..]] , avg: [...] } }
-  let attendanceHistory = loadAttendance();
+// start loading models immediately
+loadModelsWithRetry();
 
-  // ---------------------------
-  // UI wiring
-  // ---------------------------
-  const studentFiles = document.getElementById('studentFiles');
-  const studentName = document.getElementById('studentName');
-  const addStudentBtn = document.getElementById('addStudentBtn');
-  const studentPreview = document.getElementById('studentPreview');
-  const studentsList = document.getElementById('studentsList');
+// ---------- storage utils ----------
+const STUD_KEY = 'bs_students_v2';
+const ATT_KEY = 'bs_att_v2';
 
-  const classFile = document.getElementById('classFile');
-  const detectBtn = document.getElementById('detectBtn');
-  const preview = document.getElementById('preview');
-  const overlay = document.getElementById('overlay');
-  const resultPanel = document.getElementById('resultPanel');
-  const attTableBody = document.querySelector('#attTable tbody');
+function loadStudents(){ try{ return JSON.parse(localStorage.getItem(STUD_KEY))||{} }catch{return{}}}
+function saveStudents(obj){ localStorage.setItem(STUD_KEY, JSON.stringify(obj)); }
+function loadAttendance(){ try{ return JSON.parse(localStorage.getItem(ATT_KEY))||[] }catch{return[]}}
+function saveAttendance(arr){ localStorage.setItem(ATT_KEY, JSON.stringify(arr)); }
 
-  const exportPdfBtn = document.getElementById('exportPdfBtn');
-  const clearAllBtn = document.getElementById('clearAllBtn');
+let students = loadStudents(); // {name:{photos:[dataUrls], embeddings:[[...]], avg:[...]} }
+let attendance = loadAttendance();
 
-  let selectedStudentFiles = [];
+// ---------- helpers ----------
+function fileToData(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); }); }
+function loadImage(url){ return new Promise((res,rej)=>{ const img=new Image(); img.onload=()=>res(img); img.onerror=rej; img.src=url; }); }
+function cosine(a,b){ let dot=0,na=0,nb=0; for(let i=0;i<a.length;i++){ dot+=a[i]*b[i]; na+=a[i]*a[i]; nb+=b[i]*b[i]; } return dot/(Math.sqrt(na)*Math.sqrt(nb)+1e-8); }
+function avgEmb(list){ if(!list.length) return null; const L=list[0].length; const out=new Array(L).fill(0); list.forEach(e=>e.forEach((v,i)=>out[i]+=v)); return out.map(x=>x/list.length); }
+async function embeddingFromBox(imgEl, [x,y,w,h]){
+  if(!mobilenetModel) return null;
+  if(w < 20 || h < 20) return null;
+  const tmp = document.createElement('canvas'); tmp.width = Math.max(64, Math.round(w)); tmp.height = Math.max(64, Math.round(h));
+  tmp.getContext('2d').drawImage(imgEl, x, y, w, h, 0, 0, tmp.width, tmp.height);
+  const r = document.createElement('canvas'); r.width=224; r.height=224; r.getContext('2d').drawImage(tmp,0,0,224,224);
+  const t = tf.browser.fromPixels(r).toFloat().div(tf.scalar(255));
+  const embTensor = mobilenetModel.infer(t, true);
+  const emb = embTensor.arraySync();
+  embTensor.dispose(); t.dispose();
+  return Array.isArray(emb[0]) ? emb[0] : emb;
+}
 
-  studentFiles.addEventListener('change', e => {
-    selectedStudentFiles = Array.from(e.target.files || []);
-    studentPreview.innerHTML = '';
-    selectedStudentFiles.forEach(file => {
-      const img = document.createElement('img');
-      img.className = 'thumb';
-      img.src = URL.createObjectURL(file);
-      studentPreview.appendChild(img);
-    });
+// ---------- UI wiring ----------
+const studentFiles = document.getElementById('studentFiles');
+const studentName = document.getElementById('studentName');
+const addStudentBtn = document.getElementById('addStudentBtn');
+const studentPreview = document.getElementById('studentPreview');
+const studentsList = document.getElementById('studentsList');
+
+const classFile = document.getElementById('classFile');
+const detectBtn = document.getElementById('detectBtn');
+const previewImg = document.getElementById('previewImg');
+const previewOverlay = document.getElementById('previewOverlay');
+const resultPanel = document.getElementById('resultPanel');
+const attTableBody = document.querySelector('#attTable tbody');
+const exportPdfBtn = document.getElementById('exportPdfBtn');
+const clearAllBtn = document.getElementById('clearAllBtn');
+const countFacesEl = document.getElementById('countFaces');
+
+let selectedFiles = [];
+
+// handle student file selection
+studentFiles.addEventListener('change', e=>{
+  selectedFiles = Array.from(e.target.files||[]);
+  studentPreview.innerHTML = '';
+  selectedFiles.forEach(f => {
+    const img = document.createElement('img'); img.className='thumb'; img.src = URL.createObjectURL(f);
+    studentPreview.appendChild(img);
   });
+});
 
-  function renderStudentsList() {
-    studentsList.innerHTML = '';
-    const keys = Object.keys(students);
-    if (!keys.length) { studentsList.innerHTML = '<div class="small muted">No students registered</div>'; return; }
-    keys.forEach(name => {
-      const s = students[name];
-      const div = document.createElement('div');
-      div.className = 'record';
-      div.innerHTML = `<div style="display:flex;align-items:center;gap:10px">
-        <div style="width:48px;height:48px;flex:0 0 48px;border-radius:6px;overflow:hidden"><img src="${s.photos[0]}" style="width:100%;height:100%;object-fit:cover"></div>
-        <div style="flex:1"><strong>${name}</strong><div class="small muted">${(s.photos||[]).length} photos</div></div>
-        <div style="display:flex;gap:8px">
-          <button class="btn-ghost" data-name="${name}" onclick="window.editStudent && window.editStudent(this.getAttribute('data-name'))">Edit</button>
-          <button class="btn-ghost" data-name="${name}" onclick="window.deleteStudent && window.deleteStudent(this.getAttribute('data-name'))">Delete</button>
-        </div>
-      </div>`;
-      studentsList.appendChild(div);
-    });
-  }
+// render students list
+function renderStudents(){
+  studentsList.innerHTML = '';
+  const keys = Object.keys(students);
+  if(!keys.length){ studentsList.innerHTML = '<div class="small muted">No students registered</div>'; return; }
+  keys.forEach(name=>{
+    const s = students[name];
+    const row = document.createElement('div'); row.style.display='flex'; row.style.gap='8px'; row.style.alignItems='center'; row.style.padding='8px 0';
+    const img = document.createElement('img'); img.className='thumb'; img.src = s.photos && s.photos[0] ? s.photos[0] : '';
+    const info = document.createElement('div'); info.innerHTML = <strong>${name}</strong><div class="small muted">${(s.photos||[]).length} photos</div>;
+    row.appendChild(img); row.appendChild(info);
+    studentsList.appendChild(row);
+  });
+}
+renderStudents();
 
-  window.deleteStudent = function(name) {
-    if (!confirm('Delete '+name+'?')) return;
-    delete students[name];
-    saveStudents(students);
-    renderStudentsList();
-  };
+// add student -> compute embeddings (requires models loaded)
+addStudentBtn.addEventListener('click', async ()=>{
+  const name = (studentName.value||'').trim(); if(!name) return alert('Enter student name');
+  if(!selectedFiles.length) return alert('Upload 1–5 photos');
+  addStudentBtn.disabled = true; addStudentBtn.textContent = 'Processing...';
 
-  // Add student: compute embeddings for uploaded photos
-  addStudentBtn.addEventListener('click', async () => {
-    const name = (studentName.value || '').trim();
-    if (!name) return alert('Enter student name');
-    if (!selectedStudentFiles.length) return alert('Upload 1 or more photos for this student');
-
-    // show loading
-    addStudentBtn.disabled = true; addStudentBtn.textContent = 'Processing...';
-
-    const photosData = [];
-    const embeddingsList = [];
-
-    for (let f of selectedStudentFiles) {
-      try {
-        const img = await fileToImage(f);
-        // detect single face from the provided student image
+  const photos = []; const embeddings = [];
+  for(const f of selectedFiles){
+    try {
+      const data = await fileToData(f); photos.push(data);
+      // only attempt embedding if detector + mobilenet ready
+      if(detector && mobilenetModel){
+        const img = await loadImage(data);
         const preds = await detector.estimateFaces(img, false);
-        if (!preds || preds.length === 0) {
-          console.warn('No face in file', f.name);
-          // still store full photo but skip embedding
-          const dataUrl = await fileToDataUrl(f);
-          photosData.push(dataUrl);
-          continue;
+        if(preds && preds.length){
+          const p = preds[0];
+          const x = Math.max(0, Math.round(p.topLeft[0]));
+          const y = Math.max(0, Math.round(p.topLeft[1]));
+          const x2 = Math.min(img.width, Math.round(p.bottomRight[0]));
+          const y2 = Math.min(img.height, Math.round(p.bottomRight[1]));
+          const w = x2 - x; const h = y2 - y;
+          const emb = await embeddingFromBox(img, [x,y,w,h]);
+          if(emb) embeddings.push(emb);
         }
-        // take first face
-        const p = preds[0];
-        const box = p.topLeft.concat(p.bottomRight); // [x,y, x2,y2]
-        const x = Math.max(0, Math.round(box[0]));
-        const y = Math.max(0, Math.round(box[1]));
-        const x2 = Math.min(img.width, Math.round(box[2]));
-        const y2 = Math.min(img.height, Math.round(box[3]));
-        const w = x2 - x, h = y2 - y;
-        const emb = await getEmbeddingFromBox(img, [x,y,w,h]); // using mobilenet
-        if (emb) embeddingsList.push(emb);
-        // store photo as dataURL
-        const dataUrl = await fileToDataUrl(f);
-        photosData.push(dataUrl);
-      } catch (err) {
-        console.error('student photo processing error', err);
+      }
+    } catch(e){ console.warn('student photo error', e); }
+  }
+  const avg = embeddings.length ? avgEmb(embeddings) : null;
+  students[name] = { photos, embeddings, avg };
+  saveStudents(students);
+
+  // reset UI
+  selectedFiles = []; studentPreview.innerHTML=''; studentName.value=''; addStudentBtn.disabled=false; addStudentBtn.textContent='Add Student';
+  renderStudents();
+  alert('Student added: ' + name + (avg ? ' (embeddings saved)' : ' (no embeddings - model may not have been ready)'));
+});
+
+// attendance rendering
+function renderAttendance(){
+  attTableBody.innerHTML = '';
+  attendance.slice(0,200).forEach(r=>{
+    const tr = document.createElement('tr');
+    const conf = (r.confidence && r.confidence>-0.5) ? (r.confidence*100).toFixed(0) + '%' : '-';
+    tr.innerHTML = <td>${r.time}</td><td>${r.name}</td><td>${conf}</td>;
+    attTableBody.appendChild(tr);
+  });
+  resultPanel.style.display = attendance.length ? 'block' : 'none';
+}
+renderAttendance();
+
+// preview classroom photo on selection
+classFile.addEventListener('change', async ()=>{
+  if(!classFile.files[0]) return;
+  const d = await fileToData(classFile.files[0]);
+  previewImg.src = d;
+  previewImg.onload = () => {
+    previewOverlay.width = previewImg.width; previewOverlay.height = previewImg.height;
+    previewOverlay.getContext('2d').clearRect(0,0,previewOverlay.width, previewOverlay.height);
+  };
+});
+
+// detect & mark
+detectBtn.addEventListener('click', async ()=>{
+  const file = classFile.files[0]; if(!file) return alert('Upload classroom photo first');
+  detectBtn.disabled=true; detectBtn.textContent='Detecting...';
+  try {
+    // wait models ready up to short timeout
+    let deadline = Date.now() + 15000; // 15s timeout for models
+    while((!detector || !mobilenetModel) && Date.now() < deadline){
+      await sleep(500);
+    }
+    if(!detector || !mobilenetModel){
+      alert('Models not ready yet. Try again in a few seconds or refresh.');
+      detectBtn.disabled=false; detectBtn.textContent='Detect & Mark';
+      return;
+    }
+
+    const data = await fileToData(file); previewImg.src = data; await new Promise(r=>previewImg.onload=r);
+    previewOverlay.width = previewImg.width; previewOverlay.height = previewImg.height;
+    const ctx = previewOverlay.getContext('2d'); ctx.clearRect(0,0,previewOverlay.width, previewOverlay.height);
+
+    const preds = await detector.estimateFaces(previewImg, false);
+    countFacesEl.textContent = preds.length;
+
+    if(!preds || preds.length === 0){
+      alert('No faces detected. Try a clearer or closer photo.');
+      detectBtn.disabled=false; detectBtn.textContent='Detect & Mark';
+      return;
+    }
+
+    const THRESH = 0.58;
+    const now = new Date().toLocaleString();
+    const results = [];
+
+    for(let i=0;i<preds.length;i++){
+      const p = preds[i];
+      const x = Math.max(0, Math.round(p.topLeft[0]));
+      const y = Math.max(0, Math.round(p.topLeft[1]));
+      const x2 = Math.min(previewImg.width, Math.round(p.bottomRight[0]));
+      const y2 = Math.min(previewImg.height, Math.round(p.bottomRight[1]));
+      const w = x2 - x, h = y2 - y;
+
+      ctx.strokeStyle = '#00ff99'; ctx.lineWidth = 2; ctx.strokeRect(x,y,w,h);
+
+      const emb = await embeddingFromBox(previewImg, [x,y,w,h]);
+      let bestName = 'Unknown', bestScore = -1;
+      if(emb){
+        for(const name in students){
+          const s = students[name];
+          if(!s.avg) continue;
+          const sim = cosine(emb, s.avg);
+          if(sim > bestScore){ bestScore = sim; bestName = name; }
+        }
+      }
+
+      if(bestScore >= THRESH){
+        ctx.fillStyle = '#00ff99'; ctx.font = '16px Arial';
+        ctx.fillText(${bestName} (${(bestScore*100).toFixed(0)}%), x, Math.max(12,y-6));
+        results.push({time:now, name:bestName, confidence:bestScore});
+      } else {
+        ctx.fillStyle = '#ffd166'; ctx.font = '14px Arial';
+        ctx.fillText('Unknown', x, Math.max(12,y-6));
+        results.push({time:now, name:'Unknown', confidence:bestScore});
       }
     }
 
-    const avg = embeddingsList.length ? avgEmbeddings(embeddingsList) : null;
-    students[name] = { photos: photosData, embeddings: embeddingsList, avg: avg };
-    saveStudents(students);
-    // reset inputs
-    studentName.value = ''; studentFiles.value = ''; studentPreview.innerHTML = ''; selectedStudentFiles = [];
-    addStudentBtn.disabled = false; addStudentBtn.textContent = 'Add Student';
-    renderStudentsList();
-    alert('Student added: ' + name + (avg ? ' (embeddings recorded)' : ' (no face embeddings found in uploaded photos)'));
-  });
-
-  // helper: convert file to dataURL
-  function fileToDataUrl(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); }); }
-  function fileToImage(file){ return new Promise((res,rej)=>{ const url = URL.createObjectURL(file); const img = new Image(); img.onload=()=>{ URL.revokeObjectURL(url); res(img); }; img.onerror=rej; img.src=url; }); }
-
-  // helper: get embedding from box on image element
-  async function getEmbeddingFromBox(imageEl, box) {
-    try {
-      // box: [x,y,w,h]
-      const emb = await getEmbeddingFromBox_core(imageEl, box);
-      return emb;
-    } catch(e){ console.error(e); return null; }
+    // save results (record all detections)
+    results.forEach(r => attendance.unshift(r));
+    saveAttendance(attendance);
+    renderAttendance();
+    alert(Processed ${results.length} faces — ${results.filter(r=>r.name!=='Unknown').length} matched.);
+  } catch(err){
+    console.error(err);
+    alert('Detection failed: ' + (err && err.message ? err.message : String(err)));
+  } finally {
+    detectBtn.disabled=false; detectBtn.textContent='Detect & Mark';
   }
+});
 
-  // core: do actual embedding generation (same as previously defined)
-  async function getEmbeddingFromBox_core(imageEl, box) {
-    const [x,y,w,h] = box;
-    if (w < 20 || h < 20) return null;
-    const tmp = document.createElement('canvas');
-    tmp.width = Math.max(64, Math.round(w));
-    tmp.height = Math.max(64, Math.round(h));
-    const ctx = tmp.getContext('2d');
-    ctx.drawImage(imageEl, x, y, w, h, 0, 0, tmp.width, tmp.height);
-    const r = document.createElement('canvas');
-    r.width = 224; r.height = 224;
-    r.getContext('2d').drawImage(tmp, 0, 0, r.width, r.height);
-    const t = tf.browser.fromPixels(r).toFloat().div(tf.scalar(255));
-    const embTensor = mobilenetModel.infer(t, true);
-    const embArr = embTensor.arraySync();
-    embTensor.dispose(); t.dispose();
-    return Array.isArray(embArr[0]) ? embArr[0] : embArr;
+// export PDF
+exportPdfBtn.addEventListener('click', ()=>{
+  if(!attendance.length) return alert('No attendance records to export.');
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'pt',format:'a4'});
+  doc.setFontSize(18); doc.text('Attendance Report', 40, 60);
+  doc.setFontSize(11); let y = 90;
+  doc.text('Time', 40, y); doc.text('Name', 260, y); doc.text('Confidence', 480, y); y+=16;
+  for(let i=0;i<attendance.length;i++){
+    const r = attendance[i];
+    const conf = (r.confidence && r.confidence > -0.5) ? (r.confidence*100).toFixed(0) + '%' : '-';
+    doc.text(String(r.time), 40, y); doc.text(String(r.name), 260, y); doc.text(conf, 480, y); y+=14;
+    if(y > 750){ doc.addPage(); y = 40; }
   }
+  doc.save('attendance_report.pdf');
+});
 
-  // ---------------------------
-  // Detection on classroom photo
-  // ---------------------------
-  detectBtn.addEventListener('click', async () => {
-    const f = classFile.files[0];
-    if (!f) return alert('Upload a classroom photo first');
-    detectBtn.disabled = true; detectBtn.textContent = 'Detecting...';
+// clear all
+clearAllBtn.addEventListener('click', ()=>{
+  if(!confirm('Clear students and attendance?')) return;
+  students = {}; attendance = []; saveStudents(students); saveAttendance(attendance); renderStudents(); renderAttendance(); alert('Cleared');
+});
 
-    const classImg = await fileToImage(f);
-    // show preview
-    preview.src = classImg.src;
-    preview.onload = async () => {
-      // prepare overlay
-      overlay.width = preview.width; overlay.height = preview.height;
-      const ctx = overlay.getContext('2d');
-      ctx.clearRect(0,0,overlay.width,overlay.height);
+// load persisted students/attendance
+function initFromStorage(){
+  students = loadStudents(); attendance = loadAttendance();
+  renderStudents(); renderAttendance();
+}
+initFromStorage();
 
-      // detect faces using blazeface
-      const preds = await detector.estimateFaces(preview, false);
-      console.log('predictions length', preds.length);
-      const results = []; // { name, confidence, time }
+// expose for debug
+window._students = students; window._attendance = attendance;
 
-      // for each detection compute embedding and compare against students
-      for (let i=0;i<preds.length;i++){
-        const p = preds[i];
-        const topLeft = p.topLeft; const bottomRight = p.bottomRight;
-        const x = Math.max(0, Math.round(topLeft[0]));
-        const y = Math.max(0, Math.round(topLeft[1]));
-        const x2 = Math.min(preview.width, Math.round(bottomRight[0]));
-        const y2 = Math.min(preview.height, Math.round(bottomRight[1]));
-        const w = x2 - x, h = y2 - y;
-
-        // draw box (light)
-        ctx.strokeStyle = '#00ff99'; ctx.lineWidth = 2; ctx.strokeRect(x,y,w,h);
-
-        const emb = await getEmbeddingFromBox(preview, [x,y,w,h]);
-        let matchedName = 'Unknown'; let bestScore = -1;
-        if (emb) {
-          // compare with each student's avg embedding
-          for (let name in students) {
-            const s = students[name];
-            if (!s.avg) continue;
-            const sim = cosineSimilarity(emb, s.avg);
-            if (sim > bestScore) { bestScore = sim; matchedName = name; }
-          }
-        }
-        // threshold for acceptance (0.55-0.65 are common; adjust if needed)
-        const THRESH = 0.58;
-        if (bestScore >= THRESH) {
-          // draw matched label
-          ctx.fillStyle = '#00ff99'; ctx.font = '16px Arial'; ctx.fillText(matchedName + ' (' + (bestScore*100).toFixed(0) + '%)', x, Math.max(12,y-6));
-          results.push({ name: matchedName, confidence: bestScore });
-        } else {
-          ctx.fillStyle = '#ffd166'; ctx.font = '14px Arial'; ctx.fillText('Unknown', x, Math.max(12,y-6));
-          results.push({ name: 'Unknown', confidence: bestScore });
-        }
-      }
-
-      // Mark attendance (unique names)
-      const timeNow = new Date().toLocaleString();
-      const presentNames = new Set();
-      results.forEach(r=> { if (r.name && r.name !== 'Unknown') presentNames.add(r.name); });
-      const presentList = Array.from(presentNames);
-      // record attendance entries
-      presentList.forEach(n => attendanceHistory.unshift({ time: timeNow, name: n, confidence: null }));
-      // also optionally mark unknowns
-      results.forEach((r, idx) => {
-        if (r.name === 'Unknown') attendanceHistory.unshift({ time: timeNow, name: 'Unknown', confidence: r.confidence });
-      });
-
-      saveAttendance(attendanceHistory);
-      renderAttendanceResults(results);
-      detectBtn.disabled = false; detectBtn.textContent = 'Detect & Mark';
-    };
-  });
-
-  // Render attendance table
-  function renderAttendanceResults(results) {
-    resultPanel.style.display = 'block';
-    attTableBody.innerHTML = '';
-    const now = new Date().toLocaleString();
-    // show each detection
-    results.forEach(r => {
-      const tr = document.createElement('tr');
-      const confTxt = (r.confidence && r.confidence > -0.5) ? (r.confidence*100).toFixed(0) + '%' : '—';
-      tr.innerHTML = <td>${now}</td><td>${r.name}</td><td>${confTxt}</td>;
-      attTableBody.appendChild(tr);
-    });
-  }
-
-  // ---------------------------
-  // Export PDF
-  // ---------------------------
-  exportPdfBtn.addEventListener('click', () => {
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({unit:'pt',format:'a4'});
+</script>
+</body>
+</html>
